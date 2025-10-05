@@ -1,7 +1,0 @@
-{
-  "functions": {
-    "*.py": {
-      "runtime": "python3.13"
-    }
-  }
-}

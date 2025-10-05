@@ -276,27 +276,322 @@ with tab1:
                 st.metric("Planet Probability", f"{probabilities[1]*100:.2f}%")
 
 # ==================== TAB 2: BATCH ANALYSIS ====================
+# ==================== TAB 2: BATCH ANALYSIS ====================
 with tab2:
-    st.header(" Batch Analysis")
+    st.header("📊 Batch Analysis")
     st.markdown("Upload a CSV file with multiple exoplanet candidates for batch predictions")
     
-    st.info(" **Tip:** Your CSV should contain columns matching the feature names used by the model")
+    st.info("💡 **Tip:** Your CSV should contain the same columns as used in single prediction (orbital period, transit duration, depth, etc.)")
     
     uploaded_file = st.file_uploader("Choose CSV file", type=['csv'])
     
     if uploaded_file:
         df_upload = pd.read_csv(uploaded_file)
         
-        st.subheader(" Uploaded Data Preview")
+        st.subheader("📋 Uploaded Data Preview")
         st.dataframe(df_upload.head(10), use_container_width=True)
         
         st.metric("Total Candidates", len(df_upload))
         
         if st.button("⚡ Analyze All Candidates", type="primary"):
-            with st.spinner("Analyzing all candidates..."):
-                st.success(f" Would analyze {len(df_upload)} candidates!")
-                st.info(" Feature coming soon: Batch prediction implementation")
+            with st.spinner("Analyzing all candidates... This may take a moment"):
+                
+                # Initialize results lists
+                predictions = []
+                planet_probabilities = []
+                false_positive_probabilities = []
+                confidence_levels = []
+                
+                # Progress bar
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                # Process each row
+                for idx, row in df_upload.iterrows():
+                    # Update progress
+                    progress = (idx + 1) / len(df_upload)
+                    progress_bar.progress(progress)
+                    status_text.text(f"Processing candidate {idx + 1} of {len(df_upload)}...")
+                    
+                    try:
+                        # Extract features from row
+                        features_dict = {}
+                        
+                        # Map CSV columns to features (handle different column name formats)
+                        column_mapping = {
+                            'koi_period': 'period',
+                            'koi_duration': 'duration',
+                            'koi_depth': 'depth',
+                            'koi_prad': 'planet_radius',
+                            'koi_teq': 'equilibrium_temp',
+                            'koi_insol': 'insolation',
+                            'koi_steff': 'star_temp',
+                            'koi_slogg': 'star_logg',
+                            'koi_srad': 'star_radius',
+                            'ra': 'ra',
+                            'dec': 'dec',
+                            'koi_impact': 'impact_param',
+                        }
+                        
+                        # Also handle direct column names
+                        direct_columns = ['period', 'duration', 'depth', 'planet_radius', 
+                                        'equilibrium_temp', 'insolation', 'star_temp', 
+                                        'star_logg', 'star_radius', 'ra', 'dec', 'impact_param']
+                        
+                        # Extract values with fallbacks
+                        period = 0
+                        duration = 0
+                        star_radius = 0
+                        planet_radius = 0
+                        insolation = 0
+                        equilibrium_temp = 0
+                        star_temp = 0
+                        star_logg = 0
+                        
+                        # Try mapped column names first, then direct names
+                        for csv_col, feature_name in column_mapping.items():
+                            if csv_col in row and pd.notna(row[csv_col]):
+                                value = float(row[csv_col])
+                                features_dict[feature_name] = value
+                                
+                                # Store commonly used values
+                                if feature_name == 'period': period = value
+                                elif feature_name == 'duration': duration = value
+                                elif feature_name == 'star_radius': star_radius = value
+                                elif feature_name == 'planet_radius': planet_radius = value
+                                elif feature_name == 'insolation': insolation = value
+                                elif feature_name == 'equilibrium_temp': equilibrium_temp = value
+                                elif feature_name == 'star_temp': star_temp = value
+                                elif feature_name == 'star_logg': star_logg = value
+                        
+                        # Try direct column names
+                        for col in direct_columns:
+                            if col in row and pd.notna(row[col]) and col not in features_dict:
+                                value = float(row[col])
+                                features_dict[col] = value
+                                
+                                if col == 'period': period = value
+                                elif col == 'duration': duration = value
+                                elif col == 'star_radius': star_radius = value
+                                elif col == 'planet_radius': planet_radius = value
+                                elif col == 'insolation': insolation = value
+                                elif col == 'equilibrium_temp': equilibrium_temp = value
+                                elif col == 'star_temp': star_temp = value
+                                elif col == 'star_logg': star_logg = value
+                        
+                        # Engineer features
+                        if period > 0:
+                            features_dict['transit_period_ratio'] = duration / (period * 24)
+                            features_dict['period_log'] = np.log10(period)
+                        
+                        if star_radius > 0 and planet_radius > 0:
+                            features_dict['radius_ratio'] = planet_radius / star_radius
+                        
+                        if insolation > 0:
+                            features_dict['insolation_flux_log'] = np.log10(insolation)
+                        
+                        if equilibrium_temp > 0:
+                            features_dict['habitable_zone_dist'] = abs(equilibrium_temp - 288) / 288
+                        
+                        # Stellar classification
+                        if star_temp > 0:
+                            if star_temp >= 7500: star_class = 5
+                            elif star_temp >= 6000: star_class = 4
+                            elif star_temp >= 5200: star_class = 3
+                            elif star_temp >= 3700: star_class = 2
+                            else: star_class = 1
+                            features_dict['star_class'] = star_class
+                        
+                        if star_logg > 0:
+                            if star_logg < 3.5: lum_class = 3
+                            elif star_logg < 4.0: lum_class = 2
+                            else: lum_class = 1
+                            features_dict['luminosity_class'] = lum_class
+                        
+                        # Mission encoding (assume 'kepler' if mission column not present)
+                        mission = row.get('mission', 'kepler')
+                        for m in metadata['missions']:
+                            features_dict[f'mission_{m}'] = 1 if m == mission else 0
+                        
+                        # Create feature vector in correct order
+                        feature_vector = [features_dict.get(f, 0) for f in feature_names]
+                        X_input = np.array(feature_vector).reshape(1, -1)
+                        
+                        # Scale and predict
+                        X_scaled = scaler.transform(X_input)
+                        prediction = model.predict(X_scaled)[0]
+                        probabilities = model.predict_proba(X_scaled)[0]
+                        
+                        # Store results
+                        predictions.append("PLANET" if prediction == 1 else "FALSE POSITIVE")
+                        planet_probabilities.append(probabilities[1])
+                        false_positive_probabilities.append(probabilities[0])
+                        
+                        # Confidence level
+                        confidence = max(probabilities)
+                        if confidence > 0.9:
+                            confidence_levels.append("Very High")
+                        elif confidence > 0.75:
+                            confidence_levels.append("High")
+                        elif confidence > 0.6:
+                            confidence_levels.append("Moderate")
+                        else:
+                            confidence_levels.append("Low")
+                    
+                    except Exception as e:
+                        # Handle errors gracefully
+                        predictions.append("ERROR")
+                        planet_probabilities.append(0.0)
+                        false_positive_probabilities.append(0.0)
+                        confidence_levels.append(f"Error: {str(e)[:50]}")
+                
+                # Clear progress indicators
+                progress_bar.empty()
+                status_text.empty()
+                
+                # Add results to dataframe
+                df_upload['Prediction'] = predictions
+                df_upload['Planet_Probability_%'] = [f"{p*100:.2f}" for p in planet_probabilities]
+                df_upload['FalsePositive_Probability_%'] = [f"{fp*100:.2f}" for fp in false_positive_probabilities]
+                df_upload['Confidence_Level'] = confidence_levels
+                
+                # Display summary statistics
+                st.success("✅ Analysis Complete!")
                 st.balloons()
+                
+                st.markdown("---")
+                st.subheader("📊 Summary Statistics")
+                
+                summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
+                
+                with summary_col1:
+                    planet_count = predictions.count("PLANET")
+                    st.metric("Planets Detected", planet_count, 
+                             delta=f"{planet_count/len(predictions)*100:.1f}%")
+                
+                with summary_col2:
+                    fp_count = predictions.count("FALSE POSITIVE")
+                    st.metric("False Positives", fp_count,
+                             delta=f"{fp_count/len(predictions)*100:.1f}%")
+                
+                with summary_col3:
+                    high_conf = confidence_levels.count("Very High") + confidence_levels.count("High")
+                    st.metric("High Confidence", high_conf,
+                             delta=f"{high_conf/len(predictions)*100:.1f}%")
+                
+                with summary_col4:
+                    avg_planet_prob = np.mean([p for p in planet_probabilities if p > 0])
+                    st.metric("Avg Planet Prob", f"{avg_planet_prob*100:.1f}%")
+                
+                # Display results table
+                st.markdown("---")
+                st.subheader("📋 Detailed Results")
+                
+                # Create display dataframe with key columns
+                display_cols = ['Prediction', 'Planet_Probability_%', 
+                               'FalsePositive_Probability_%', 'Confidence_Level']
+                
+                # Add original identifying columns if they exist
+                id_cols = []
+                for col in ['kepid', 'kepoi_name', 'kepler_name', 'koi_id', 'name', 'id']:
+                    if col in df_upload.columns:
+                        id_cols.append(col)
+                
+                display_df = df_upload[id_cols + display_cols] if id_cols else df_upload[display_cols]
+                
+                # Color code predictions
+                def highlight_predictions(row):
+                    if row['Prediction'] == 'PLANET':
+                        return ['background-color: #90EE90'] * len(row)
+                    elif row['Prediction'] == 'FALSE POSITIVE':
+                        return ['background-color: #FFB6C6'] * len(row)
+                    else:
+                        return ['background-color: #FFD700'] * len(row)
+                
+                st.dataframe(
+                    display_df.style.apply(highlight_predictions, axis=1),
+                    use_container_width=True,
+                    height=400
+                )
+                
+                # Visualization
+                st.markdown("---")
+                st.subheader("📈 Visualization")
+                
+                viz_col1, viz_col2 = st.columns(2)
+                
+                with viz_col1:
+                    # Pie chart of predictions
+                    pred_counts = pd.Series(predictions).value_counts()
+                    fig_pie = go.Figure(data=[go.Pie(
+                        labels=pred_counts.index,
+                        values=pred_counts.values,
+                        hole=.3,
+                        marker_colors=['#90EE90', '#FFB6C6', '#FFD700']
+                    )])
+                    fig_pie.update_layout(
+                        title="Prediction Distribution",
+                        height=400
+                    )
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                
+                with viz_col2:
+                    # Histogram of planet probabilities
+                    fig_hist = go.Figure()
+                    fig_hist.add_trace(go.Histogram(
+                        x=[p*100 for p in planet_probabilities],
+                        nbinsx=20,
+                        marker_color='lightblue',
+                        name='Planet Probability'
+                    ))
+                    fig_hist.update_layout(
+                        title="Distribution of Planet Probabilities",
+                        xaxis_title="Planet Probability (%)",
+                        yaxis_title="Count",
+                        height=400
+                    )
+                    st.plotly_chart(fig_hist, use_container_width=True)
+                
+                # Download results
+                st.markdown("---")
+                st.subheader("💾 Download Results")
+                
+                # Convert to CSV
+                csv = df_upload.to_csv(index=False)
+                
+                st.download_button(
+                    label="📥 Download Full Results as CSV",
+                    data=csv,
+                    file_name=f"exoplanet_predictions_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    type="primary"
+                )
+                
+                # Summary report
+                summary_text = f"""
+EXOPLANET DETECTION - BATCH ANALYSIS REPORT
+Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+SUMMARY STATISTICS:
+- Total Candidates Analyzed: {len(predictions)}
+- Planets Detected: {planet_count} ({planet_count/len(predictions)*100:.1f}%)
+- False Positives: {fp_count} ({fp_count/len(predictions)*100:.1f}%)
+- High Confidence Predictions: {high_conf} ({high_conf/len(predictions)*100:.1f}%)
+- Average Planet Probability: {avg_planet_prob*100:.2f}%
+
+CONFIDENCE BREAKDOWN:
+- Very High Confidence: {confidence_levels.count('Very High')}
+- High Confidence: {confidence_levels.count('High')}
+- Moderate Confidence: {confidence_levels.count('Moderate')}
+- Low Confidence: {confidence_levels.count('Low')}
+                """
+                
+                st.download_button(
+                    label="📄 Download Summary Report (TXT)",
+                    data=summary_text,
+                    file_name=f"exoplanet_summary_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                    mime="text/plain"
+                )
 
 # ==================== TAB 3: MODEL ANALYTICS ====================
 with tab3:
